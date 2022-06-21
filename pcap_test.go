@@ -60,6 +60,27 @@ func TestPcapOpenLive(t *testing.T) {
 	testPcapHandle(t, pcapOpenLive)
 }
 
+func TestPcapFilterCompile(t *testing.T) {
+	h, err := OpenDead(LINKTYPE_ETHERNET, 65535)
+	if h == nil || err != nil {
+		if h != nil {
+			h.Close()
+		}
+		t.Fatalf("Failed to create/init pcap handle err: %s", err)
+	}
+
+	filter := "udp port 53"
+	insns, err := h.Compile(filter)
+	if err != nil {
+		t.Errorf("Failed to compile filter expression: %s", err)
+	}
+	if len(insns) == 0 {
+		t.Error("Compiled filter has no instructions")
+	}
+
+	h.Close()
+}
+
 func TestPcapDump(t *testing.T) {
 	port := 54321
 	h, err := pcapOpenLive("lo", fmt.Sprintf("udp dst port %d", port), 2000)

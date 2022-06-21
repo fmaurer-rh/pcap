@@ -27,6 +27,8 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"golang.org/x/net/bpf"
 )
 
 type Pcap struct {
@@ -173,6 +175,25 @@ func OpenOffline(file string) (handle *Pcap, err error) {
 	return
 }
 
+// Creates a fake Pcap that is not bound to any interface. This is useful for
+// compiling filter expressions.
+func OpenDead(linktype int32, snaplen int32) (handle *Pcap, err error) {
+	var buf *C.char
+	buf = (*C.char)(C.calloc(ERRBUF_SIZE, 1))
+	h := new(Pcap)
+
+	h.cptr = C.pcap_open_dead(C.int(linktype), C.int(snaplen))
+	if h.cptr == nil {
+		handle = nil
+		err = &pcapError{C.GoString(buf)}
+	} else {
+		handle = h
+	}
+
+	C.free(unsafe.Pointer(buf))
+	return
+}
+
 // Pcap closes a handler.
 func (p *Pcap) Close() {
 	C.pcap_close(p.cptr)
@@ -232,6 +253,37 @@ func (p *Pcap) SetFilter(expr string) (err error) {
 	}
 	C.pcap_freecode(&bpf)
 	return nil
+}
+
+// Compile a pcap-filter(7) expression to BPF instructions.
+//
+// For filters that are not intended for a particular interface of the host,
+// OpenDead can be used to create a fake Pcap to compile the expression.
+func (p *Pcap) Compile(expr string) (insns []bpf.Instruction, err error) {
+	var bpf_prog C.struct_bpf_program
+	cexpr := C.CString(expr)
+	defer C.free(unsafe.Pointer(cexpr))
+
+	if C.pcap_compile(p.cptr, &bpf_prog, cexpr, 1, 0) == -1 {
+		return nil, p.Geterror()
+	}
+
+	r_insns := make([]bpf.RawInstruction, bpf_prog.bf_len)
+	bf_len := int(bpf_prog.bf_len)
+	bf_insns := unsafe.Pointer(bpf_prog.bf_insns)
+	bf_size := unsafe.Sizeof(*bpf_prog.bf_insns)
+	for i := 0; i < bf_len; i++ {
+		bf_insn := (*C.struct_bpf_insn)(unsafe.Pointer(uintptr(bf_insns) + uintptr(i)*bf_size))
+		r_insns[i] = bpf.RawInstruction{
+			Op: uint16(bf_insn.code),
+			Jt: uint8(bf_insn.jt),
+			Jf: uint8(bf_insn.jf),
+			K:  uint32(bf_insn.k),
+		}
+	}
+	C.pcap_freecode(&bpf_prog)
+	insns, _ = bpf.Disassemble(r_insns)
+	return
 }
 
 func (p *Pcap) SetDirection(direction string) (err error) {
